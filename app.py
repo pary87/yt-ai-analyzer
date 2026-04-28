@@ -2,13 +2,14 @@ import re
 from urllib.parse import parse_qs, urlparse
 
 import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import (
+from youtube_transcript_api import (
     CouldNotRetrieveTranscript,
     IpBlocked,
     NoTranscriptFound,
     RequestBlocked,
     TranscriptsDisabled,
+    YouTubeTranscriptApi,
+    YouTubeTranscriptApiException,
     YouTubeRequestFailed,
     VideoUnavailable,
 )
@@ -29,6 +30,13 @@ def extract_video_id(user_input):
         return None
 
     # A raw YouTube video ID is usually 11 characters long.
+    if VIDEO_ID_PATTERN.match(cleaned_input):
+        return cleaned_input
+
+    # urlparse needs a scheme to correctly recognize schemeless domains.
+    if cleaned_input.startswith(("youtube.com/", "www.youtube.com/", "m.youtube.com/", "youtu.be/")):
+        cleaned_input = f"https://{cleaned_input}"
+
     if "/" not in cleaned_input and "?" not in cleaned_input:
         if VIDEO_ID_PATTERN.match(cleaned_input):
             return cleaned_input
@@ -36,18 +44,28 @@ def extract_video_id(user_input):
         return None
 
     parsed_url = urlparse(cleaned_input)
+    hostname = parsed_url.netloc.lower()
+    path_parts = [part for part in parsed_url.path.split("/") if part]
 
     # Handle URLs like: https://www.youtube.com/watch?v=VIDEO_ID
-    if "youtube.com" in parsed_url.netloc:
+    if hostname in ("youtube.com", "www.youtube.com", "m.youtube.com"):
         query_values = parse_qs(parsed_url.query)
         video_ids = query_values.get("v")
 
         if video_ids and VIDEO_ID_PATTERN.match(video_ids[0]):
             return video_ids[0]
 
+        # Handle URLs like: https://youtube.com/shorts/VIDEO_ID
+        # Also supports /embed/VIDEO_ID and /v/VIDEO_ID.
+        if len(path_parts) >= 2 and path_parts[0] in ("shorts", "embed", "v"):
+            video_id = path_parts[1]
+
+            if VIDEO_ID_PATTERN.match(video_id):
+                return video_id
+
     # Handle URLs like: https://youtu.be/VIDEO_ID
-    if "youtu.be" in parsed_url.netloc:
-        video_id = parsed_url.path.strip("/").split("/")[0]
+    if hostname in ("youtu.be", "www.youtu.be"):
+        video_id = path_parts[0] if path_parts else ""
 
         if VIDEO_ID_PATTERN.match(video_id):
             return video_id
@@ -55,6 +73,7 @@ def extract_video_id(user_input):
     return None
 
 
+@st.cache_data(ttl=3600)
 def fetch_transcript_segments(video_id):
     """Fetch English transcript segments from YouTube.
 
@@ -241,7 +260,7 @@ def main():
                     file_name="chatgpt_analysis_prompt.txt",
                     mime="text/plain",
                 )
-            except Exception as error:
+            except YouTubeTranscriptApiException as error:
                 st.error(get_transcript_error_message(error))
 
         with st.expander("Debug info"):
