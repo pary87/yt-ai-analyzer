@@ -1,34 +1,46 @@
 # YouTube Video Analyzer
 
-A local Python Streamlit app for analyzing YouTube videos.
+A local Python Streamlit app that fetches YouTube transcripts and prepares copy-and-paste ChatGPT analysis prompts.
 
-## Project Type
+## What The App Does
 
-This project is a Python Streamlit app.
+- Accepts a YouTube URL or video ID.
+- Extracts the YouTube video ID from common URL formats.
+- Fetches an available English transcript.
+- Cleans the transcript into more readable text.
+- Displays transcript metadata, including character count, word count, and estimated reading time.
+- Shows a transcript preview and full transcript expander.
+- Downloads the cleaned transcript as a `.txt` file.
+- Generates a ChatGPT analysis prompt for manual copy/paste.
+- Supports prompt modes:
+  - General Analysis
+  - Study Notes
+  - Technical / Engineering Review
+  - Action Plan
+- Creates chunked ChatGPT prompts for very long transcripts.
+- Includes a small debug info expander.
 
-It is not a Node, React, or Vite app.
+## Current Limitations
 
-## Current Feature List
+- Only videos with available English transcripts work.
+- Some videos may block or disable transcripts.
+- No AI summarization is performed inside this app.
+- No OpenAI API calls are used.
+- No browser automation is used.
+- The user manually copies or downloads prompts and pastes them into ChatGPT.
 
-- Streamlit app
-- YouTube URL input
-- Video ID extraction
-- Transcript fetching
-- Cleaned transcript display
-- Transcript metadata
-- `transcript.txt` download
-- Debug info expander
+## Setup On Windows PowerShell
 
-## Current MVP Status
-
-MVP-1.5: Transcript extraction and cleanup complete.
-
-## How to Run
+Open PowerShell and go to the project folder:
 
 ```powershell
 cd C:\p\youtube-analyzer
+```
+
+Activate the existing virtual environment:
+
+```powershell
 .\.venv\Scripts\Activate.ps1
-streamlit run .\app.py
 ```
 
 If PowerShell says scripts are disabled, run this first in the same terminal:
@@ -37,28 +49,25 @@ If PowerShell says scripts are disabled, run this first in the same terminal:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-Open the app in your browser:
-
-```text
-http://localhost:8501
-```
-
-## Setup
-
-Install the required Python packages:
+Install dependencies:
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-## Known Limitations
+## Run The Streamlit App
 
-- Only videos with available English transcripts work.
-- Some videos may block or disable transcripts.
-- No AI summarization yet.
-- No OpenAI API integration yet.
+After activating the virtual environment, run:
 
-## Important
+```powershell
+streamlit run .\app.py
+```
+
+Open the app in your browser:
+
+```text
+http://localhost:8501
+```
 
 Do not run this app with:
 
@@ -67,3 +76,28 @@ python .\app.py
 ```
 
 Streamlit apps must be launched with `streamlit run`.
+
+## Run Manual Regression Checks
+
+After activating the virtual environment, run:
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile .\app.py
+.\.venv\Scripts\python.exe -m py_compile .\tests_manual.py
+.\.venv\Scripts\python.exe .\tests_manual.py
+```
+
+Expected success message:
+
+```text
+All manual regression checks passed.
+```
+
+## Dependencies
+
+Runtime dependencies are listed in `requirements.txt`.
+
+Current pinned versions:
+
+- `streamlit==1.56.0`
+- `youtube-transcript-api==1.2.4`

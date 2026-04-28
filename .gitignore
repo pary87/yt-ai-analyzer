@@ -4,3 +4,12 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 .vscode/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+*.tmp
+*.temp
+*.cache
+.DS_Store
+Thumbs.db
