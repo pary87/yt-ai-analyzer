@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YouTube Video Analyzer</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+    <script type="module" src="sidepanel.js"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <img src="icons/icon48.png" alt="" width="32" height="32" />
+      <div>
+        <h1>YouTube Video Analyzer</h1>
+        <p class="subtitle">Transcript to ChatGPT prompt, no AI calls</p>
+      </div>
+    </header>
+
+    <form id="analyze-form" class="card" autocomplete="off">
+      <label for="youtube-url">YouTube URL</label>
+      <div class="input-row">
+        <input id="youtube-url" type="text" placeholder="https://www.youtube.com/watch?v=..." spellcheck="false" />
+        <button id="use-current-tab" type="button" class="secondary" title="Use the video in the current tab">Current tab</button>
+      </div>
+
+      <label for="prompt-mode">Prompt mode</label>
+      <select id="prompt-mode"></select>
+
+      <button id="analyze-button" type="submit" class="primary" disabled>Analyze</button>
+    </form>
+
+    <div id="status" class="status" hidden>
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Fetching transcript...</span>
+    </div>
+
+    <div id="error" class="alert alert-error" role="alert" hidden></div>
+
+    <main id="results" hidden>
+      <section class="card video-card">
+        <h2 id="video-title"></h2>
+        <dl class="stats">
+          <div>
+            <dt>Video ID</dt>
+            <dd id="video-id"></dd>
+          </div>
+          <div>
+            <dt>Words</dt>
+            <dd id="word-count"></dd>
+          </div>
+          <div>
+            <dt>Characters</dt>
+            <dd id="character-count"></dd>
+          </div>
+          <div>
+            <dt>Reading time</dt>
+            <dd id="reading-time"></dd>
+          </div>
+        </dl>
+        <p id="track-info" class="muted"></p>
+      </section>
+
+      <div id="long-warning" class="alert alert-warning" hidden>
+        This transcript is very long. The generated ChatGPT prompt may exceed some model limits.
+      </div>
+
+      <section class="card">
+        <h3>Transcript Preview</h3>
+        <p id="transcript-preview" class="preview"></p>
+
+        <details>
+          <summary>Full Transcript</summary>
+          <div id="full-transcript" class="scroll-text"></div>
+        </details>
+        <div class="actions">
+          <button type="button" class="secondary" data-copy="readable" aria-label="Copy readable transcript">Copy</button>
+          <button type="button" class="secondary" data-download="readable" title="Download Readable Transcript" aria-label="Download Readable Transcript">Download .txt</button>
+        </div>
+
+        <details>
+          <summary>Timestamped Transcript</summary>
+          <pre id="timestamped-transcript" class="scroll-text"></pre>
+        </details>
+        <div class="actions">
+          <button type="button" class="secondary" data-copy="timestamped" aria-label="Copy timestamped transcript">Copy</button>
+          <button type="button" class="secondary" data-download="timestamped" title="Download Timestamped Transcript" aria-label="Download Timestamped Transcript">Download .txt</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>ChatGPT Analysis Prompt</h3>
+        <div class="alert alert-info">
+          Copy or download this prompt, then paste it into ChatGPT for analysis. This extension does not send the
+          transcript to any AI service.
+        </div>
+        <label for="chatgpt-prompt" class="sr-only">Copy this prompt into ChatGPT</label>
+        <textarea id="chatgpt-prompt" readonly rows="14"></textarea>
+        <div class="actions">
+          <button type="button" class="primary" data-copy="prompt">Copy Prompt</button>
+          <button type="button" class="secondary" data-download="prompt" title="Download ChatGPT Prompt" aria-label="Download ChatGPT Prompt">Download .txt</button>
+          <a class="button secondary" href="https://chatgpt.com/" target="_blank" rel="noopener">Open ChatGPT</a>
+        </div>
+      </section>
+
+      <section id="chunk-section" class="card" hidden>
+        <h3>Chunked ChatGPT Prompts</h3>
+        <p class="muted">Use these smaller prompts one at a time if the full prompt is too large for ChatGPT.</p>
+        <div id="chunk-list"></div>
+      </section>
+    </main>
+
+    <details id="debug" class="card debug" hidden>
+      <summary>Debug info</summary>
+      <dl id="debug-list"></dl>
+    </details>
+
+    <template id="chunk-template">
+      <details class="chunk">
+        <summary></summary>
+        <textarea readonly rows="10"></textarea>
+        <div class="actions">
+          <button type="button" class="primary" data-chunk-copy>Copy</button>
+          <button type="button" class="secondary" data-chunk-download>Download .txt</button>
+        </div>
+      </details>
+    </template>
+  </body>
+</html>
