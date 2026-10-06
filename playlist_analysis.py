@@ -6,15 +6,26 @@ import zipfile
 from urllib.parse import parse_qs, urlparse
 
 import streamlit as st
+from requests.exceptions import RequestException
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
-from youtube_transcript_api import YouTubeTranscriptApiException
+from youtube_transcript_api import RequestBlocked, YouTubeTranscriptApiException
 
 
 VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 PLAYLIST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{12,}$")
 PLAYLIST_BATCH_WORD_LIMIT = 12000
-PLAYLIST_REQUEST_DELAY_SECONDS = 0.15
+# YouTube blocks networks that request transcripts too quickly. The pause is
+# only taken before a real download; transcripts collected earlier are reused.
+PLAYLIST_REQUEST_DELAY_SECONDS = 1.0
+BATCH_SYNTHESIS_WORD_LIMIT = 250
+GROUP_SYNTHESIS_WORD_LIMIT = 400
+SYNTHESIS_GROUP_SIZE = 10
+BLOCKED_MESSAGE = (
+    "YouTube blocked transcript requests from this network (rate limit). "
+    "Wait before trying again."
+)
+NOT_ATTEMPTED_MESSAGE = "Not attempted: collection stopped after YouTube blocked requests."
 
 
 def extract_playlist_id(user_input):
@@ -54,6 +65,25 @@ def normalize_playlist_url(user_input):
     return f"https://www.youtube.com/playlist?list={playlist_id}"
 
 
+class _YtDlpErrorLog:
+    """Keep yt-dlp's error messages so the app can show why a playlist failed."""
+
+    def __init__(self):
+        self.errors = []
+
+    def debug(self, message):
+        pass
+
+    def info(self, message):
+        pass
+
+    def warning(self, message):
+        pass
+
+    def error(self, message):
+        self.errors.append(message)
+
+
 @st.cache_data(ttl=3600)
 def fetch_playlist_info(user_input):
     """Fetch a flat playlist index without downloading video or audio."""
@@ -63,19 +93,22 @@ def fetch_playlist_info(user_input):
     if not playlist_id or not playlist_url:
         raise ValueError("Invalid YouTube playlist URL or playlist ID.")
 
+    error_log = _YtDlpErrorLog()
     options = {
         "extract_flat": True,
         "skip_download": True,
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
+        "logger": error_log,
     }
 
     with YoutubeDL(options) as ydl:
         playlist_data = ydl.extract_info(playlist_url, download=False)
 
     if not playlist_data:
-        raise DownloadError("YouTube did not return playlist metadata.")
+        reason = error_log.errors[-1] if error_log.errors else "no details from yt-dlp"
+        raise DownloadError(f"YouTube did not return playlist metadata ({reason}).")
 
     entries = []
 
@@ -114,6 +147,41 @@ def _split_words(text, word_limit=PLAYLIST_BATCH_WORD_LIMIT):
     ]
 
 
+def split_transcript_into_parts(text, word_limit=PLAYLIST_BATCH_WORD_LIMIT):
+    """Split a transcript into parts of at most word_limit words.
+
+    Paragraphs stay intact; only a single paragraph longer than the limit is
+    split mid-paragraph.
+    """
+    parts = []
+    current_paragraphs = []
+    current_words = 0
+
+    for paragraph in text.split("\n\n"):
+        paragraph_words = len(paragraph.split())
+
+        if not paragraph_words:
+            continue
+
+        pieces = [paragraph] if paragraph_words <= word_limit else _split_words(paragraph, word_limit)
+
+        for piece in pieces:
+            piece_words = len(piece.split())
+
+            if current_paragraphs and current_words + piece_words > word_limit:
+                parts.append("\n\n".join(current_paragraphs))
+                current_paragraphs = []
+                current_words = 0
+
+            current_paragraphs.append(piece)
+            current_words += piece_words
+
+    if current_paragraphs:
+        parts.append("\n\n".join(current_paragraphs))
+
+    return parts
+
+
 def build_playlist_corpus(successful_videos):
     """Combine playlist transcripts while keeping strong video boundaries."""
     sections = []
@@ -136,7 +204,7 @@ def build_playlist_units(successful_videos, word_limit=PLAYLIST_BATCH_WORD_LIMIT
     units = []
 
     for video in successful_videos:
-        chunks = _split_words(video["transcript_text"], word_limit)
+        chunks = split_transcript_into_parts(video["transcript_text"], word_limit)
         total_parts = len(chunks)
 
         for part_number, chunk_text in enumerate(chunks, start=1):
@@ -177,6 +245,37 @@ def split_playlist_units_into_batches(units, word_limit=PLAYLIST_BATCH_WORD_LIMI
         batches.append(current_batch)
 
     return batches
+
+
+def describe_batch(batch_units):
+    """Describe which playlist videos a batch covers, e.g. 'videos 4–6'."""
+    first_unit = batch_units[0]
+    last_unit = batch_units[-1]
+
+    if first_unit["position"] != last_unit["position"]:
+        return f"videos {first_unit['position']}–{last_unit['position']}"
+
+    description = f"video {first_unit['position']}"
+
+    if first_unit["total_parts"] > 1:
+        description += f", part {first_unit['part_number']} of {first_unit['total_parts']}"
+
+    return description
+
+
+def plan_synthesis_groups(total_batches, group_size=SYNTHESIS_GROUP_SIZE):
+    """Plan the middle synthesis step as (first_batch, last_batch) ranges.
+
+    Returns an empty list when the final prompt can take every batch synthesis
+    directly; otherwise each group combines up to group_size batch syntheses.
+    """
+    if total_batches <= group_size:
+        return []
+
+    return [
+        (first_batch, min(first_batch + group_size - 1, total_batches))
+        for first_batch in range(1, total_batches + 1, group_size)
+    ]
 
 
 def build_playlist_batch_prompt(
@@ -223,7 +322,7 @@ Important workflow instructions:
 - Preserve every video's title and playlist position in your notes.
 - Analyze each included video or transcript part on its own before drawing cross-video conclusions.
 - Track recurring themes, terminology, claims, disagreements, progression, and references to earlier/later material.
-- End with a section called "Batch synthesis" that can be combined with the other batch syntheses later.
+- End with a section called "Batch synthesis" of at most {BATCH_SYNTHESIS_WORD_LIMIT} words. Only that section is carried into the playlist synthesis, so make it self-contained and name the playlist videos behind each point.
 - Do not invent content for playlist videos that are not present in this batch.
 
 {analysis_instructions}
@@ -234,6 +333,42 @@ Playlist transcript batch:
 """
 
 
+def build_playlist_group_prompt(
+    playlist_info,
+    prompt_mode,
+    group_number,
+    total_groups,
+    first_batch,
+    last_batch,
+    total_batches,
+):
+    """Build a prompt that combines the batch syntheses of one group of batches."""
+    placeholders = "\n\n".join(
+        f'[PASTE THE "Batch synthesis" SECTION FROM BATCH {batch_number} HERE]'
+        for batch_number in range(first_batch, last_batch + 1)
+    )
+
+    return f"""Combine these batch syntheses from one part of a larger YouTube playlist.
+
+Playlist title: {playlist_info["playlist_title"]}
+Playlist ID: {playlist_info["playlist_id"]}
+Group: {group_number} of {total_groups} (batches {first_batch}–{last_batch} of {total_batches})
+Selected prompt mode: {prompt_mode}
+
+Instructions:
+- Use only the batch syntheses pasted below. Do not invent content for other parts of the playlist.
+- Keep track of which playlist videos each point comes from.
+- Note recurring themes, how ideas develop across these batches, and any tensions or contradictions.
+- End with a section called "Group synthesis" of at most {GROUP_SYNTHESIS_WORD_LIMIT} words. Only that section is carried into the final playlist synthesis.
+
+=== BATCH SYNTHESES START ===
+
+{placeholders}
+
+=== BATCH SYNTHESES END ===
+"""
+
+
 def build_playlist_synthesis_prompt(
     playlist_info,
     prompt_mode,
@@ -241,24 +376,35 @@ def build_playlist_synthesis_prompt(
     total_video_count,
     total_batches,
     failure_count,
+    total_groups=0,
 ):
-    """Build the final prompt used after every playlist batch is analyzed."""
-    placeholders = "\n".join(
-        f"[PASTE BATCH {batch_number} ANALYSIS HERE]"
-        for batch_number in range(1, total_batches + 1)
-    )
+    """Build the final prompt used after every batch (and group) is analyzed."""
+    if total_groups:
+        source = "group syntheses"
+        placeholders = "\n\n".join(
+            f'[PASTE THE "Group synthesis" SECTION FROM GROUP {group_number} HERE]'
+            for group_number in range(1, total_groups + 1)
+        )
+        group_line = f"\nGroup syntheses: {total_groups}"
+    else:
+        source = "batch syntheses"
+        placeholders = "\n\n".join(
+            f'[PASTE THE "Batch synthesis" SECTION FROM BATCH {batch_number} HERE]'
+            for batch_number in range(1, total_batches + 1)
+        )
+        group_line = ""
 
-    return f"""Create a whole-playlist synthesis from the batch analyses pasted below.
+    return f"""Create a whole-playlist synthesis from the {source} pasted below.
 
 Playlist title: {playlist_info["playlist_title"]}
 Playlist ID: {playlist_info["playlist_id"]}
 Videos discovered: {total_video_count}
 Videos with usable English transcripts: {successful_video_count}
 Videos skipped or failed: {failure_count}
-Transcript-analysis batches: {total_batches}
+Transcript-analysis batches: {total_batches}{group_line}
 Selected analysis mode: {prompt_mode}
 
-Use the batch analyses as your evidence. Do not claim to have analyzed videos that were skipped or failed.
+Use the {source} as your evidence. Do not claim to have analyzed videos that were skipped or failed.
 
 Required whole-playlist synthesis:
 1. Executive overview of the playlist
@@ -275,16 +421,16 @@ Required whole-playlist synthesis:
 
 When evidence is missing because a transcript failed, say so explicitly.
 
-=== BATCH ANALYSES START ===
+=== {source.upper()} START ===
 
 {placeholders}
 
-=== BATCH ANALYSES END ===
+=== {source.upper()} END ===
 """
 
 
 def build_playlist_manifest_csv(successful_videos, failures):
-    """Create a CSV manifest recording success/failure for every processed video."""
+    """Create a CSV manifest recording the outcome for every discovered video."""
     rows = []
 
     for video in successful_videos:
@@ -304,7 +450,7 @@ def build_playlist_manifest_csv(successful_videos, failures):
         rows.append(
             {
                 "position": failure["position"],
-                "status": "failed",
+                "status": failure["status"],
                 "title": failure["title"],
                 "video_id": failure["video_id"],
                 "url": failure["url"],
@@ -333,15 +479,38 @@ def build_playlist_manifest_csv(successful_videos, failures):
     return output.getvalue()
 
 
+def encode_csv_for_excel(csv_text):
+    """Encode CSV as UTF-8 with a byte-order mark so Excel shows non-ASCII titles correctly."""
+    return csv_text.encode("utf-8-sig")
+
+
 def build_playlist_export_zip(
     playlist_info,
     successful_videos,
     failures,
     batch_prompts,
+    group_prompts,
     synthesis_prompt,
 ):
     """Create a portable ZIP containing transcripts, prompts, and status evidence."""
     archive_buffer = io.BytesIO()
+
+    if group_prompts:
+        workflow_steps = (
+            "1. Analyze prompts/batches in numerical order, each in a new chat.\n"
+            '2. Save the "Batch synthesis" section of each ChatGPT response.\n'
+            "3. Paste those sections into the matching prompts/groups prompt and\n"
+            '   save the "Group synthesis" section of each response.\n'
+            '4. Paste every "Group synthesis" section into\n'
+            "   prompts/final_playlist_synthesis.txt.\n"
+        )
+    else:
+        workflow_steps = (
+            "1. Analyze prompts/batches in numerical order, each in a new chat.\n"
+            '2. Save the "Batch synthesis" section of each ChatGPT response.\n'
+            '3. Paste every "Batch synthesis" section into\n'
+            "   prompts/final_playlist_synthesis.txt.\n"
+        )
 
     with zipfile.ZipFile(
         archive_buffer,
@@ -355,16 +524,13 @@ def build_playlist_export_zip(
                 f"Playlist: {playlist_info['playlist_title']}\n"
                 f"Playlist ID: {playlist_info['playlist_id']}\n\n"
                 "Workflow:\n"
-                "1. Analyze prompts/batches in numerical order.\n"
-                "2. Save each ChatGPT response.\n"
-                "3. Open prompts/final_playlist_synthesis.txt.\n"
-                "4. Paste all completed batch analyses into that prompt.\n\n"
+                f"{workflow_steps}\n"
                 "The analyzer did not send transcript text to an AI service.\n"
             ),
         )
         archive.writestr(
             "playlist_manifest.csv",
-            build_playlist_manifest_csv(successful_videos, failures),
+            encode_csv_for_excel(build_playlist_manifest_csv(successful_videos, failures)),
         )
         archive.writestr(
             "playlist_full_readable_transcript.txt",
@@ -379,6 +545,12 @@ def build_playlist_export_zip(
             archive.writestr(
                 f"prompts/batches/playlist_batch_{batch_number:03d}.txt",
                 batch_prompt,
+            )
+
+        for group_number, group_prompt in enumerate(group_prompts, start=1):
+            archive.writestr(
+                f"prompts/groups/playlist_group_{group_number:03d}.txt",
+                group_prompt,
             )
 
         for video in successful_videos:
@@ -398,7 +570,7 @@ def build_playlist_export_zip(
                 "\n".join(
                     (
                         f"{failure['position']:03d} | {failure['video_id']} | "
-                        f"{failure['title']} | {failure['error']}"
+                        f"{failure['title']} | {failure['status']} | {failure['error']}"
                     )
                     for failure in failures
                 ),
@@ -407,75 +579,92 @@ def build_playlist_export_zip(
     return archive_buffer.getvalue()
 
 
-def _collect_playlist_transcripts(
-    playlist_info,
+def collect_playlist_transcripts(
+    entries,
     fetch_transcript_segments,
     clean_transcript_text,
     build_timestamped_transcript,
     calculate_transcript_metadata,
     get_transcript_error_message,
+    collected=None,
+    request_delay=PLAYLIST_REQUEST_DELAY_SECONDS,
+    on_progress=None,
 ):
-    entries = playlist_info["entries"]
+    """Collect an English transcript for each playlist entry, in order.
 
-    if not entries:
-        raise DownloadError("No playable videos were found in this playlist.")
+    `collected` maps video IDs to transcripts gathered earlier. Those videos are
+    reused without a request, and each new success is added as soon as it
+    arrives, so an interrupted or blocked run loses no finished work.
 
+    Collection stops at the first sign that YouTube is blocking this network:
+    every further request would fail and could prolong the block. Remaining
+    videos that are not already collected are marked "not attempted".
+
+    Returns (successful_videos, failures, blocked).
+    """
+    collected = {} if collected is None else collected
     successful_videos = []
     failures = []
-    total_entries = len(entries)
-    progress = st.progress(0)
-    status = st.empty()
+    blocked = False
+    has_fetched = False
 
     for index, entry in enumerate(entries, start=1):
-        status.write(
-            f"Fetching transcript {index} of {total_entries}: {entry['title']}"
-        )
+        if on_progress:
+            on_progress(index, len(entries), entry)
+
+        transcript = collected.get(entry["video_id"])
+
+        if transcript is not None:
+            successful_videos.append({**entry, **transcript})
+            continue
+
+        if blocked:
+            failures.append({**entry, "status": "not attempted", "error": NOT_ATTEMPTED_MESSAGE})
+            continue
+
+        if has_fetched and request_delay:
+            time.sleep(request_delay)
+
+        has_fetched = True
 
         try:
             transcript_segments = fetch_transcript_segments(entry["video_id"])
-            transcript_text = clean_transcript_text(transcript_segments)
-            timestamped_transcript = build_timestamped_transcript(transcript_segments)
-            metadata = calculate_transcript_metadata(transcript_text)
-
-            successful_videos.append(
-                {
-                    **entry,
-                    "transcript_text": transcript_text,
-                    "timestamped_transcript": timestamped_transcript,
-                    "metadata": metadata,
-                }
-            )
+        except RequestBlocked:
+            blocked = True
+            failures.append({**entry, "status": "failed", "error": BLOCKED_MESSAGE})
+            continue
         except YouTubeTranscriptApiException as error:
             failures.append(
-                {
-                    **entry,
-                    "error": get_transcript_error_message(error),
-                }
+                {**entry, "status": "failed", "error": get_transcript_error_message(error)}
             )
+            continue
+        except RequestException as error:
+            failures.append({**entry, "status": "failed", "error": f"Network error: {error}"})
+            continue
 
-        progress.progress(index / total_entries)
+        transcript_text = clean_transcript_text(transcript_segments)
+        transcript = {
+            "transcript_text": transcript_text,
+            "timestamped_transcript": build_timestamped_transcript(transcript_segments),
+            "metadata": calculate_transcript_metadata(transcript_text),
+        }
+        collected[entry["video_id"]] = transcript
+        successful_videos.append({**entry, **transcript})
 
-        if index < total_entries:
-            time.sleep(PLAYLIST_REQUEST_DELAY_SECONDS)
-
-    status.empty()
-    progress.empty()
-
-    return successful_videos, failures
+    return successful_videos, failures, blocked
 
 
-def _build_result(
+def build_playlist_outputs(
     playlist_info,
     successful_videos,
     failures,
     prompt_mode,
-    build_analysis_instructions,
+    analysis_instructions,
 ):
-    units = build_playlist_units(successful_videos)
-    batches = split_playlist_units_into_batches(units)
+    """Build every prompt and export for one prompt mode from collected transcripts."""
+    batches = split_playlist_units_into_batches(build_playlist_units(successful_videos))
     total_batches = len(batches)
     total_entries = len(playlist_info["entries"])
-    analysis_instructions = build_analysis_instructions(prompt_mode)
 
     batch_prompts = [
         build_playlist_batch_prompt(
@@ -490,7 +679,19 @@ def _build_result(
         )
         for batch_number, batch_units in enumerate(batches, start=1)
     ]
-
+    groups = plan_synthesis_groups(total_batches)
+    group_prompts = [
+        build_playlist_group_prompt(
+            playlist_info,
+            prompt_mode,
+            group_number,
+            len(groups),
+            first_batch,
+            last_batch,
+            total_batches,
+        )
+        for group_number, (first_batch, last_batch) in enumerate(groups, start=1)
+    ]
     synthesis_prompt = build_playlist_synthesis_prompt(
         playlist_info,
         prompt_mode,
@@ -498,46 +699,114 @@ def _build_result(
         total_entries,
         total_batches,
         len(failures),
+        total_groups=len(groups),
     )
 
     return {
-        "playlist_info": playlist_info,
-        "successful_videos": successful_videos,
-        "failures": failures,
         "batch_prompts": batch_prompts,
+        "batch_labels": [describe_batch(batch_units) for batch_units in batches],
+        "groups": groups,
+        "group_prompts": group_prompts,
         "synthesis_prompt": synthesis_prompt,
-        "prompt_mode": prompt_mode,
+        "corpus": build_playlist_corpus(successful_videos),
+        "manifest_csv": encode_csv_for_excel(
+            build_playlist_manifest_csv(successful_videos, failures)
+        ),
+        "export_zip": build_playlist_export_zip(
+            playlist_info,
+            successful_videos,
+            failures,
+            batch_prompts,
+            group_prompts,
+            synthesis_prompt,
+        ),
         "total_words": sum(
             video["metadata"]["word_count"] for video in successful_videos
         ),
     }
 
 
-def _render_result(result):
-    playlist_info = result["playlist_info"]
-    successful_videos = result["successful_videos"]
-    failures = result["failures"]
-    batch_prompts = result["batch_prompts"]
-    synthesis_prompt = result["synthesis_prompt"]
-    playlist_id = playlist_info["playlist_id"]
-    prompt_mode_slug = (
-        result["prompt_mode"]
-        .lower()
-        .replace(" / ", "_")
-        .replace("/", "_")
-        .replace(" ", "_")
+def _slugify(prompt_mode):
+    return prompt_mode.lower().replace(" / ", "_").replace("/", "_").replace(" ", "_")
+
+
+def _get_outputs(collection, prompt_mode, build_analysis_instructions):
+    """Return outputs for the current collection and mode, building them once.
+
+    Changing the prompt mode rebuilds prompts from the collected transcripts
+    without fetching anything again.
+    """
+    key = (collection["run_id"], prompt_mode)
+    outputs = st.session_state.get("playlist_outputs")
+
+    if outputs is None or outputs["key"] != key:
+        outputs = build_playlist_outputs(
+            collection["playlist_info"],
+            collection["successful_videos"],
+            collection["failures"],
+            prompt_mode,
+            build_analysis_instructions(prompt_mode),
+        )
+        outputs["key"] = key
+        st.session_state["playlist_outputs"] = outputs
+
+    return outputs
+
+
+def _render_prompt_picker(title, prompts, labels, key_prefix, file_prefix):
+    """Show one prompt at a time with a picker, instead of every prompt at once."""
+    total = len(prompts)
+    index = st.selectbox(
+        title,
+        range(total),
+        format_func=lambda i: f"{i + 1} of {total} ({labels[i]})",
+        key=f"{key_prefix}_select",
+    )
+    st.text_area(
+        f"{title} {index + 1} of {total}",
+        value=prompts[index],
+        height=450,
+        key=f"{key_prefix}_text_{index}",
+    )
+    st.download_button(
+        f"Download {title.lower()} {index + 1}",
+        data=prompts[index],
+        file_name=f"{file_prefix}_{index + 1:03d}_of_{total:03d}.txt",
+        mime="text/plain",
+        key=f"{key_prefix}_download_{index}",
+        on_click="ignore",
     )
 
-    st.subheader("Playlist Analysis Ready")
+
+def _render_result(collection, outputs, prompt_mode):
+    playlist_info = collection["playlist_info"]
+    successful_videos = collection["successful_videos"]
+    failures = collection["failures"]
+    playlist_id = playlist_info["playlist_id"]
+    prompt_mode_slug = _slugify(prompt_mode)
+    # Widget keys include the run and mode, so a new analysis or mode never
+    # shows text left over from the previous one.
+    key_prefix = f"playlist_{collection['run_id']}_{prompt_mode_slug}"
+    batch_prompts = outputs["batch_prompts"]
+    group_prompts = outputs["group_prompts"]
+
+    st.subheader("Playlist Analysis")
     st.write(f"Playlist: {playlist_info['playlist_title']}")
     st.write(f"Playlist ID: {playlist_id}")
     st.write(f"Videos discovered: {len(playlist_info['entries'])}")
     st.write(f"Usable English transcripts: {len(successful_videos)}")
     st.write(f"Skipped or failed videos: {len(failures)}")
-    st.write(f"Total transcript words: {result['total_words']:,}")
-    st.write(f"Generated ChatGPT batches: {len(batch_prompts)}")
+    st.write(f"Total transcript words: {outputs['total_words']:,}")
 
-    if failures:
+    if collection["blocked"]:
+        not_attempted = sum(1 for failure in failures if failure["status"] == "not attempted")
+        st.warning(
+            "YouTube started blocking transcript requests from this network, so collection "
+            f"stopped. {not_attempted} video(s) were not attempted. Collected transcripts are "
+            "kept for this session: wait a while, then click Analyze Whole Playlist again to "
+            "fetch only the missing videos."
+        )
+    elif failures:
         st.warning(
             "Some videos could not be included. The manifest and ZIP package record "
             "the exact failures so the final synthesis can distinguish missing evidence."
@@ -549,92 +818,97 @@ def _render_result(result):
             "Status": "Ready",
             "Title": video["title"],
             "Words": video["metadata"]["word_count"],
+            "Reason": "",
         }
         for video in successful_videos
     ]
     status_rows.extend(
         {
             "Position": failure["position"],
-            "Status": "Failed",
+            "Status": failure["status"].capitalize(),
             "Title": failure["title"],
-            "Words": "",
+            "Words": None,
+            "Reason": failure["error"],
         }
         for failure in failures
     )
     status_rows.sort(key=lambda row: row["Position"])
 
     with st.expander("Video transcript status", expanded=bool(failures)):
-        st.dataframe(status_rows, use_container_width=True, hide_index=True)
-
-    corpus = build_playlist_corpus(successful_videos)
-    manifest_csv = build_playlist_manifest_csv(successful_videos, failures)
-    export_zip = build_playlist_export_zip(
-        playlist_info,
-        successful_videos,
-        failures,
-        batch_prompts,
-        synthesis_prompt,
-    )
+        st.dataframe(status_rows, hide_index=True)
 
     st.subheader("Downloads")
     st.download_button(
-        "Download Full Playlist Transcript",
-        data=corpus,
-        file_name=f"playlist_{playlist_id}_full_transcript.txt",
-        mime="text/plain",
-    )
-    st.download_button(
         "Download Playlist Manifest CSV",
-        data=manifest_csv,
+        data=outputs["manifest_csv"],
         file_name=f"playlist_{playlist_id}_manifest.csv",
         mime="text/csv",
+        on_click="ignore",
+    )
+
+    if not successful_videos:
+        st.error("No usable English transcripts were collected from this playlist.")
+        return
+
+    st.download_button(
+        "Download Full Playlist Transcript",
+        data=outputs["corpus"],
+        file_name=f"playlist_{playlist_id}_full_transcript.txt",
+        mime="text/plain",
+        on_click="ignore",
     )
     st.download_button(
         "Download Complete Playlist Analysis Package (.zip)",
-        data=export_zip,
+        data=outputs["export_zip"],
         file_name=f"playlist_{playlist_id}_{prompt_mode_slug}_analysis_package.zip",
         mime="application/zip",
+        on_click="ignore",
     )
 
-    st.subheader("Batch Analysis Prompts")
+    rounds = len(batch_prompts) + len(group_prompts) + 1
+    st.subheader("ChatGPT Prompts")
     st.info(
-        "Analyze these batch prompts in order. Each one produces a batch synthesis. "
-        "After all batches are complete, use the final synthesis prompt below."
+        f"This playlist takes {rounds} ChatGPT rounds: {len(batch_prompts)} batch prompt(s), "
+        f"{len(group_prompts)} group prompt(s), and 1 final prompt. Use a new chat for each "
+        'prompt and keep only the "synthesis" section of each answer for the next step.'
     )
 
-    for batch_number, batch_prompt in enumerate(batch_prompts, start=1):
-        with st.expander(
-            f"Playlist batch {batch_number} of {len(batch_prompts)}",
-            expanded=batch_number == 1,
-        ):
-            st.text_area(
-                f"Copy playlist batch {batch_number}",
-                value=batch_prompt,
-                height=450,
-                key=f"playlist_batch_text_{batch_number}",
-            )
-            st.download_button(
-                f"Download Playlist Batch {batch_number}",
-                data=batch_prompt,
-                file_name=(
-                    f"playlist_{playlist_id}_{prompt_mode_slug}_"
-                    f"batch_{batch_number:03d}_of_{len(batch_prompts):03d}.txt"
-                ),
-                mime="text/plain",
-                key=f"download_playlist_batch_{batch_number}",
-            )
+    st.markdown("**Step 1: Batch prompts**")
+    _render_prompt_picker(
+        "Batch",
+        batch_prompts,
+        outputs["batch_labels"],
+        f"{key_prefix}_batch",
+        f"playlist_{playlist_id}_{prompt_mode_slug}_batch",
+    )
 
-    st.subheader("Final Whole-Playlist Synthesis Prompt")
+    if group_prompts:
+        st.markdown("**Step 2: Group prompts**")
+        st.caption(
+            'Paste the "Batch synthesis" sections from the listed batches into each group prompt.'
+        )
+        _render_prompt_picker(
+            "Group",
+            group_prompts,
+            [f"batches {first}–{last}" for first, last in outputs["groups"]],
+            f"{key_prefix}_group",
+            f"playlist_{playlist_id}_{prompt_mode_slug}_group",
+        )
+
+    final_source = "Group synthesis" if group_prompts else "Batch synthesis"
+    st.markdown(f"**Step {3 if group_prompts else 2}: Final whole-playlist synthesis prompt**")
     st.text_area(
-        "After completing all batch analyses, paste those results into this prompt",
-        value=synthesis_prompt,
-        height=650,
+        f'Paste every "{final_source}" section into this prompt',
+        value=outputs["synthesis_prompt"],
+        height=500,
+        key=f"{key_prefix}_final_text",
     )
     st.download_button(
         "Download Final Playlist Synthesis Prompt",
-        data=synthesis_prompt,
+        data=outputs["synthesis_prompt"],
         file_name=f"playlist_{playlist_id}_{prompt_mode_slug}_final_synthesis.txt",
         mime="text/plain",
+        on_click="ignore",
     )
 
 
@@ -646,8 +920,11 @@ def render_playlist_mode(
     calculate_transcript_metadata,
     get_transcript_error_message,
     build_analysis_instructions,
+    playlist_fetcher=None,
+    request_delay=PLAYLIST_REQUEST_DELAY_SECONDS,
 ):
     """Render whole-playlist analysis inside the parent Streamlit app."""
+    playlist_fetcher = playlist_fetcher or fetch_playlist_info
     playlist_input = st.text_input(
         "YouTube playlist URL or playlist ID",
         placeholder="https://www.youtube.com/playlist?list=...",
@@ -661,7 +938,8 @@ def render_playlist_mode(
 
     st.caption(
         "Whole-playlist mode indexes the playlist, then attempts to collect an "
-        "English transcript for every playable video. Large playlists can take several minutes."
+        "English transcript for every playable video. Large playlists can take several minutes. "
+        "No transcript is sent to an AI service; you paste the prompts into ChatGPT yourself."
     )
 
     if st.button("Analyze Whole Playlist", disabled=not has_input):
@@ -672,34 +950,58 @@ def render_playlist_mode(
             )
         else:
             try:
-                with st.spinner("Reading playlist and collecting transcripts..."):
-                    playlist_info = fetch_playlist_info(playlist_input)
-                    successful_videos, failures = _collect_playlist_transcripts(
-                        playlist_info,
+                with st.spinner("Reading playlist..."):
+                    playlist_info = playlist_fetcher(playlist_input)
+
+                if not playlist_info["entries"]:
+                    st.error("No playable videos were found in this playlist.")
+                else:
+                    progress = st.progress(0.0)
+                    status = st.empty()
+
+                    def show_progress(index, total, entry):
+                        status.write(f"Collecting transcript {index} of {total}: {entry['title']}")
+                        progress.progress(index / total)
+
+                    successful_videos, failures, blocked = collect_playlist_transcripts(
+                        playlist_info["entries"],
                         fetch_transcript_segments,
                         clean_transcript_text,
                         build_timestamped_transcript,
                         calculate_transcript_metadata,
                         get_transcript_error_message,
+                        collected=st.session_state.setdefault("playlist_transcripts", {}),
+                        request_delay=request_delay,
+                        on_progress=show_progress,
                     )
+                    status.empty()
+                    progress.empty()
 
-                    if not successful_videos:
-                        st.error(
-                            "No usable English transcripts were collected from this playlist."
-                        )
-                        st.session_state.pop("playlist_result", None)
-                    else:
-                        st.session_state["playlist_result"] = _build_result(
-                            playlist_info,
-                            successful_videos,
-                            failures,
-                            prompt_mode,
-                            build_analysis_instructions,
-                        )
+                    run_id = st.session_state.get("playlist_run_id", 0) + 1
+                    st.session_state["playlist_run_id"] = run_id
+                    st.session_state["playlist_collection"] = {
+                        "run_id": run_id,
+                        "playlist_info": playlist_info,
+                        "successful_videos": successful_videos,
+                        "failures": failures,
+                        "blocked": blocked,
+                    }
             except (DownloadError, ValueError) as error:
                 st.error(f"Playlist error: {error}")
 
-    result = st.session_state.get("playlist_result")
+    collection = st.session_state.get("playlist_collection")
 
-    if result:
-        _render_result(result)
+    if collection:
+        current_playlist_id = extract_playlist_id(playlist_input)
+
+        if current_playlist_id and current_playlist_id != collection["playlist_info"]["playlist_id"]:
+            st.info(
+                "Showing results for the last analyzed playlist. Click Analyze Whole Playlist "
+                "to analyze the playlist you entered."
+            )
+
+        _render_result(
+            collection,
+            _get_outputs(collection, prompt_mode, build_analysis_instructions),
+            prompt_mode,
+        )
