@@ -23,21 +23,25 @@ A local Python Streamlit app that fetches YouTube transcripts and prepares copy-
   - Attempts to collect an English transcript for each video.
   - Preserves playlist order and video attribution.
   - Splits large playlists into ChatGPT-sized analysis batches.
-  - Generates a final whole-playlist synthesis prompt.
+  - Combines batch results through group prompts and a final whole-playlist synthesis prompt.
+  - Stops collecting when YouTube blocks requests, and keeps collected transcripts so a later run fetches only the missing videos.
   - Records failed/skipped videos instead of silently omitting them.
   - Exports a ZIP package with transcripts, prompts, manifest, and failure evidence.
 - Includes a small debug info expander.
 
 ## Whole-Playlist Workflow
 
-In the app, choose **Whole playlist**, paste a playlist URL, select the analysis mode, and click **Analyze Whole Playlist**.
+In the app, choose **Whole playlist**, paste a playlist URL, select the analysis mode, and click **Analyze Whole Playlist**. After collecting transcripts, the app shows how many ChatGPT rounds the playlist needs.
 
-For large playlists, the app deliberately uses a two-stage manual workflow:
+So that no single prompt grows too large, the manual workflow is staged:
 
-1. Analyze each generated playlist batch in ChatGPT.
-2. Paste the completed batch analyses into the generated final synthesis prompt.
+1. Paste each batch prompt into a new ChatGPT chat and keep the "Batch synthesis" section of each answer (at most 250 words).
+2. If there are more than 10 batches, paste those sections into the group prompts (10 batches each) and keep each "Group synthesis" section (at most 400 words).
+3. Paste the synthesis sections into the final whole-playlist prompt.
 
-This avoids trying to place hundreds of videos into one prompt while preserving which ideas came from which video.
+Each step preserves which ideas came from which video. Changing the prompt mode rebuilds every prompt from the collected transcripts without downloading them again.
+
+The app waits one second between transcript downloads. If YouTube starts blocking requests, collection stops, the transcripts already collected are kept for the rest of the session, and the remaining videos are marked "not attempted". Click **Analyze Whole Playlist** again later to fetch only the missing videos.
 
 The app still does **not** automatically send transcripts to an AI service.
 
@@ -45,7 +49,7 @@ The app still does **not** automatically send transcripts to an AI service.
 
 - Only videos with available English transcripts are currently analyzed.
 - Playlist extraction depends on YouTube remaining accessible to `yt-dlp`; YouTube changes can occasionally require a dependency update.
-- Very large playlists can take several minutes to collect and may encounter YouTube transcript rate limits. Failures are recorded in the playlist manifest.
+- Very large playlists take several minutes to collect (at least three minutes for 180 videos) and may hit YouTube transcript rate limits. Failures are recorded in the playlist manifest.
 - Some videos may block or disable transcripts.
 - No AI summarization is performed inside this app.
 - No OpenAI API calls are used.
@@ -183,7 +187,7 @@ Run these in PowerShell from the existing project folder, for example `C:\p\yout
 
    ```powershell
    .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-   .\.venv\Scripts\python.exe -m py_compile .\app.py .\tests_manual.py
+   .\.venv\Scripts\python.exe -m py_compile .\app.py .\playlist_analysis.py .\tests_manual.py
    .\.venv\Scripts\python.exe .\tests_manual.py
    ```
 
@@ -199,4 +203,4 @@ Current pinned versions:
 
 - `streamlit==1.56.0`
 - `youtube-transcript-api==1.2.4`
-- `yt-dlp>=2025.1.26,<2027`
+- `yt-dlp>=2026.8.19` (a minimum rather than a pin: YouTube changes regularly need newer `yt-dlp` releases)
