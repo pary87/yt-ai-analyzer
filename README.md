@@ -4,7 +4,7 @@ A local Python Streamlit app that fetches YouTube transcripts and prepares copy-
 
 ## What The App Does
 
-- Accepts a YouTube URL or video ID.
+- Accepts a YouTube video URL/video ID or a full YouTube playlist URL/playlist ID.
 - Extracts the YouTube video ID from common URL formats.
 - Fetches an available English transcript.
 - Cleans the transcript into more readable text.
@@ -18,11 +18,38 @@ A local Python Streamlit app that fetches YouTube transcripts and prepares copy-
   - Technical / Engineering Review
   - Action Plan
 - Creates chunked ChatGPT prompts for very long transcripts.
+- Adds whole-playlist analysis:
+  - Discovers every playable video in a playlist.
+  - Attempts to collect an English transcript for each video.
+  - Preserves playlist order and video attribution.
+  - Splits large playlists into ChatGPT-sized analysis batches.
+  - Combines batch results through group prompts and a final whole-playlist synthesis prompt.
+  - Stops collecting when YouTube blocks requests, and keeps collected transcripts while the app runs so a later run fetches only the missing videos.
+  - Records failed/skipped videos instead of silently omitting them.
+  - Exports a ZIP package with transcripts, prompts, manifest, and failure evidence.
 - Includes a small debug info expander.
+
+## Whole-Playlist Workflow
+
+In the app, choose **Whole playlist**, paste a playlist URL, select the analysis mode, and click **Analyze Whole Playlist**. After collecting transcripts, the app shows how many ChatGPT rounds the playlist needs.
+
+So that no single prompt grows too large, the manual workflow is staged:
+
+1. Paste each batch prompt into a new ChatGPT chat and keep the "Batch synthesis" section of each answer (at most 250 words).
+2. If there are more than 10 batches, paste those sections into the group prompts (up to 10 batches each) and keep each "Group synthesis" section (at most 400 words).
+3. Paste the synthesis sections into the final whole-playlist prompt, which also lists the videos that have no transcript.
+
+Each step preserves which ideas came from which video. Changing the prompt mode rebuilds every prompt from the collected transcripts without downloading them again.
+
+The app waits one second between transcript downloads. If YouTube starts blocking requests, collection stops, the transcripts already collected are kept while the app is running, and the remaining videos are marked "not attempted". Click **Analyze Whole Playlist** again later to fetch only the missing videos.
+
+The app still does **not** automatically send transcripts to an AI service.
 
 ## Current Limitations
 
-- Only videos with available English transcripts work.
+- Only videos with available English transcripts are currently analyzed.
+- Playlist extraction depends on YouTube remaining accessible to `yt-dlp`; YouTube changes can occasionally require a dependency update.
+- Very large playlists take several minutes to collect (at least three minutes for 180 videos) and may hit YouTube transcript rate limits. Failures are recorded in the playlist manifest.
 - Some videos may block or disable transcripts.
 - No AI summarization is performed inside this app.
 - No OpenAI API calls are used.
@@ -91,6 +118,7 @@ After activating the virtual environment, run:
 
 ```powershell
 .\.venv\Scripts\python.exe -m py_compile .\app.py
+.\.venv\Scripts\python.exe -m py_compile .\playlist_analysis.py
 .\.venv\Scripts\python.exe -m py_compile .\tests_manual.py
 .\.venv\Scripts\python.exe .\tests_manual.py
 ```
@@ -109,7 +137,7 @@ GitHub Actions runs the same checks on Windows for every pull request and every 
 
 ## Migrating An Existing `master` Installation
 
-Older copies of this project track the `master` branch. `main` and `master` share no history, so `git pull` on `master` will never receive new work. The app code on `master`'s latest commit is identical to `main`'s before this cleanup, so switching does not change how the app behaves. A fresh clone already uses `main`.
+Older copies of this project track the `master` branch. `main` and `master` share no history, so `git pull` on `master` will never receive new work. Switching adds whole-playlist mode; step 5 installs its `yt-dlp` dependency. Single-video analysis works as before, and its button is now labelled **Analyze Video**. A fresh clone already uses `main`.
 
 Run these in PowerShell from the existing project folder, for example `C:\p\youtube-analyzer`:
 
@@ -159,7 +187,7 @@ Run these in PowerShell from the existing project folder, for example `C:\p\yout
 
    ```powershell
    .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-   .\.venv\Scripts\python.exe -m py_compile .\app.py .\tests_manual.py
+   .\.venv\Scripts\python.exe -m py_compile .\app.py .\playlist_analysis.py .\tests_manual.py
    .\.venv\Scripts\python.exe .\tests_manual.py
    ```
 
@@ -175,3 +203,4 @@ Current pinned versions:
 
 - `streamlit==1.56.0`
 - `youtube-transcript-api==1.2.4`
+- `yt-dlp>=2026.8.19` (a minimum rather than a pin: YouTube changes regularly need newer `yt-dlp` releases)

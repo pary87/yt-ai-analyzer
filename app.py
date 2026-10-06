@@ -1,5 +1,6 @@
 import json
 import re
+import sys
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
@@ -401,6 +402,36 @@ def main():
     # Show the page title at the top of the app.
     st.title("YouTube Video Analyzer")
 
+    source_type = st.radio(
+        "What do you want to analyze?",
+        ("Single video", "Whole playlist"),
+        horizontal=True,
+    )
+
+    if source_type == "Whole playlist":
+        # Import playlist support only when it is used, so single-video mode
+        # keeps working even if playlist-only packages such as yt-dlp are missing.
+        try:
+            from playlist_analysis import render_playlist_mode
+        except ImportError as error:
+            st.error(
+                f"Whole-playlist mode is unavailable: {error}. "
+                f"To enable it, run `{sys.executable} -m pip install -r requirements.txt` "
+                "in the project folder, then restart the app. Single-video mode still works."
+            )
+            return
+
+        render_playlist_mode(
+            PROMPT_MODES,
+            fetch_transcript_segments,
+            clean_transcript_text,
+            build_timestamped_transcript,
+            calculate_transcript_metadata,
+            get_transcript_error_message,
+            build_analysis_instructions,
+        )
+        return
+
     # Ask the user to paste a YouTube video URL.
     youtube_url = st.text_input("YouTube URL")
     has_youtube_url = bool(youtube_url.strip())
@@ -411,7 +442,7 @@ def main():
     st.write(f"Selected prompt mode: {prompt_mode}")
 
     # When the button is clicked, try to fetch and display the transcript.
-    if st.button("Analyze", disabled=not has_youtube_url):
+    if st.button("Analyze Video", disabled=not has_youtube_url):
         video_id = extract_video_id(youtube_url)
         transcript_segment_count = None
 
