@@ -31,7 +31,7 @@ A local Python Streamlit app that fetches YouTube transcripts and prepares copy-
 
 ## Setup On Windows PowerShell
 
-The app requires Python 3.14, the version CI tests.
+Use Python 3.14, the version CI tests.
 
 First time only, clone the repository and create a Python 3.14 virtual environment inside it:
 
@@ -121,7 +121,10 @@ Run these in PowerShell from the existing project folder, for example `C:\p\yout
    git log --oneline origin/master..master
    ```
 
-   Both commands after `git fetch` should print nothing. If `git status` lists files, commit them or copy them somewhere safe. If `git log` lists commits, they are not on GitHub: stop and ask for them to be moved to `main` in a separate pull request.
+   Both commands after `git fetch` should print nothing.
+
+   - If `git status` lists files, set them aside with `git stash push --include-untracked -m before-main`, then run the commands again. To get them back later, run `git switch master` and `git stash pop`.
+   - If `git log` lists commits, they are not on GitHub. Publish them on a new branch without changing `master`, using `git push origin master:refs/heads/backup/master-local`, then stop and ask the builder to port them to `main` in a separate pull request. Do not run a plain `git push` on `master`.
 
 2. Keep a bookmark of the current state:
 
@@ -135,7 +138,7 @@ Run these in PowerShell from the existing project folder, for example `C:\p\yout
    git switch --track origin/main
    ```
 
-   If a local `main` already exists, run `git switch main` and then `git pull --ff-only` instead. If Git refuses because untracked files would be overwritten, move those files out of the folder and try again. Your `.venv` folder is not affected.
+   If a local `main` already exists, run `git switch main` and then `git pull --ff-only` instead. If Git refuses because local changes or untracked files would be overwritten, go back to step 1. Your `.venv` folder is not affected.
 
 4. Check that the existing `.venv` uses Python 3.14:
 
@@ -143,7 +146,14 @@ Run these in PowerShell from the existing project folder, for example `C:\p\yout
    .\.venv\Scripts\python.exe --version
    ```
 
-   If it prints a version other than 3.14, delete the `.venv` folder and recreate it with `py -3.14 -m venv .venv`.
+   If it prints another version, first confirm `py -3.14 --version` works (install Python 3.14 if it does not). Then keep the old environment as a fallback and create a new one:
+
+   ```powershell
+   Rename-Item .venv .venv-old
+   py -3.14 -m venv .venv
+   ```
+
+   Delete `.venv-old` once step 5 passes.
 
 5. Update dependencies and run the checks:
 
