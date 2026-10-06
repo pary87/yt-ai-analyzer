@@ -5,6 +5,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 import streamlit as st
+from playlist_analysis import render_playlist_mode
 from youtube_transcript_api import (
     CouldNotRetrieveTranscript,
     IpBlocked,
@@ -398,25 +399,42 @@ def get_transcript_error_message(error):
 
 def main():
     """Show the Streamlit app UI."""
-    # Show the page title at the top of the app.
     st.title("YouTube Video Analyzer")
 
-    # Ask the user to paste a YouTube video URL.
+    source_type = st.radio(
+        "What do you want to analyze?",
+        ("Single video", "Whole playlist"),
+        horizontal=True,
+    )
+
+    if source_type == "Whole playlist":
+        render_playlist_mode(
+            PROMPT_MODES,
+            fetch_transcript_segments,
+            clean_transcript_text,
+            build_timestamped_transcript,
+            calculate_transcript_metadata,
+            get_transcript_error_message,
+            build_analysis_instructions,
+        )
+        return
+
     youtube_url = st.text_input("YouTube URL")
     has_youtube_url = bool(youtube_url.strip())
 
-    # Choose the kind of ChatGPT prompt to generate after transcript cleanup.
     prompt_mode = st.selectbox("Prompt mode", PROMPT_MODES)
     prompt_mode_slug = slugify_prompt_mode(prompt_mode)
     st.write(f"Selected prompt mode: {prompt_mode}")
 
-    # When the button is clicked, try to fetch and display the transcript.
-    if st.button("Analyze", disabled=not has_youtube_url):
+    if st.button("Analyze Video", disabled=not has_youtube_url):
         video_id = extract_video_id(youtube_url)
         transcript_segment_count = None
 
         if not video_id:
-            st.error("Invalid YouTube URL or video ID. Please paste a supported YouTube URL or an 11-character video ID.")
+            st.error(
+                "Invalid YouTube URL or video ID. Please paste a supported YouTube URL "
+                "or an 11-character video ID."
+            )
         else:
             try:
                 with st.spinner("Fetching transcript..."):
