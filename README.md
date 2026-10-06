@@ -31,13 +31,19 @@ A local Python Streamlit app that fetches YouTube transcripts and prepares copy-
 
 ## Setup On Windows PowerShell
 
-Open PowerShell and go to the project folder:
+Use Python 3.14, the version CI tests.
+
+First time only, clone the repository and create a Python 3.14 virtual environment inside it:
 
 ```powershell
-cd C:\p\youtube-analyzer
+git clone https://github.com/pary87/yt-ai-analyzer.git
+cd yt-ai-analyzer
+py -3.14 -m venv .venv
 ```
 
-Activate the existing virtual environment:
+Already set up? Open PowerShell in your existing project folder instead. If it still tracks `master`, follow [Migrating An Existing `master` Installation](#migrating-an-existing-master-installation) first.
+
+Activate the virtual environment:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -77,6 +83,8 @@ python .\app.py
 
 Streamlit apps must be launched with `streamlit run`.
 
+Or double-click `Run YouTube Analyzer.bat`. It runs the app from the folder the launcher is in, using that folder's `.venv`, and prints the setup commands if `.venv` is missing. To start it from the desktop, create a shortcut to it rather than copying the file.
+
 ## Run Manual Regression Checks
 
 After activating the virtual environment, run:
@@ -92,6 +100,72 @@ Expected success message:
 ```text
 All manual regression checks passed.
 ```
+
+GitHub Actions runs the same checks on Windows for every pull request and every push to `main`.
+
+## Branches
+
+`main` is the canonical branch. `master` and tag `v1.0.0-mvp1` keep the original local history; they are preserved but no longer updated. Rules for AI agents working in this repository are in [AGENTS.md](AGENTS.md).
+
+## Migrating An Existing `master` Installation
+
+Older copies of this project track the `master` branch. `main` and `master` share no history, so `git pull` on `master` will never receive new work. The app code on `master`'s latest commit is identical to `main`'s before this cleanup, so switching does not change how the app behaves. A fresh clone already uses `main`.
+
+Run these in PowerShell from the existing project folder, for example `C:\p\youtube-analyzer`:
+
+1. Check for work that exists only on this computer:
+
+   ```powershell
+   git fetch origin
+   git status --short
+   git log --oneline origin/master..master
+   ```
+
+   Both commands after `git fetch` should print nothing.
+
+   - If `git status` lists files, set them aside with `git stash push --include-untracked -m before-main`, then run the commands again. To get them back later, run `git switch master` and `git stash pop`.
+   - If `git log` lists commits, they are not on GitHub. Publish them on a new branch without changing `master`, using `git push origin master:refs/heads/backup/master-local`, then stop and ask the builder to port them to `main` in a separate pull request. Do not run a plain `git push` on `master`.
+
+2. Keep a bookmark of the current state:
+
+   ```powershell
+   git branch backup/master-local master
+   ```
+
+3. Switch to `main`:
+
+   ```powershell
+   git switch --track origin/main
+   ```
+
+   If a local `main` already exists, run `git switch main` and then `git pull --ff-only` instead. If Git refuses because local changes or untracked files would be overwritten, go back to step 1. Your `.venv` folder is not affected.
+
+4. Check that the existing `.venv` uses Python 3.14:
+
+   ```powershell
+   .\.venv\Scripts\python.exe --version
+   ```
+
+   If it prints another version, first confirm `py -3.14 --version` works (install Python 3.14 if it does not). Then keep the old environment as a fallback and create a new one:
+
+   ```powershell
+   Rename-Item .venv .venv-old
+   py -3.14 -m venv .venv
+   ```
+
+   Delete `.venv-old` once step 5 passes.
+
+5. Update dependencies and run the checks:
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   .\.venv\Scripts\python.exe -m py_compile .\app.py .\tests_manual.py
+   .\.venv\Scripts\python.exe .\tests_manual.py
+   ```
+
+From now on, use `git pull` on `main`. To return to the old state, run `git switch master`. Do not merge `master` and `main` into each other.
+
+If you copied the old `Run YouTube Analyzer.bat` somewhere else, such as the desktop, that copy still points at `C:\p\youtube-analyzer` and keeps working. Replace it with a shortcut to the launcher inside the project folder; a copy of the new launcher would look for the app next to itself.
 
 ## Dependencies
 
