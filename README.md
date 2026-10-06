@@ -31,14 +31,14 @@ A local Python Streamlit app that fetches YouTube transcripts and prepares copy-
 
 ## Setup On Windows PowerShell
 
-CI tests with Python 3.14; use the same version locally.
+The app requires Python 3.14, the version CI tests.
 
-First time only, clone the repository and create a virtual environment inside it:
+First time only, clone the repository and create a Python 3.14 virtual environment inside it:
 
 ```powershell
 git clone https://github.com/pary87/yt-ai-analyzer.git
 cd yt-ai-analyzer
-py -m venv .venv
+py -3.14 -m venv .venv
 ```
 
 Already set up? Open PowerShell in your existing project folder instead. If it still tracks `master`, follow [Migrating An Existing `master` Installation](#migrating-an-existing-master-installation) first.
@@ -137,7 +137,15 @@ Run these in PowerShell from the existing project folder, for example `C:\p\yout
 
    If a local `main` already exists, run `git switch main` and then `git pull --ff-only` instead. If Git refuses because untracked files would be overwritten, move those files out of the folder and try again. Your `.venv` folder is not affected.
 
-4. Update dependencies and run the checks:
+4. Check that the existing `.venv` uses Python 3.14:
+
+   ```powershell
+   .\.venv\Scripts\python.exe --version
+   ```
+
+   If it prints a version other than 3.14, delete the `.venv` folder and recreate it with `py -3.14 -m venv .venv`.
+
+5. Update dependencies and run the checks:
 
    ```powershell
    .\.venv\Scripts\python.exe -m pip install -r requirements.txt
