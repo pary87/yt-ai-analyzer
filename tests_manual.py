@@ -1,5 +1,13 @@
 # This is a lightweight regression script, not a full production test suite.
 
+from playlist_analysis import (
+    build_playlist_synthesis_prompt,
+    build_playlist_units,
+    extract_playlist_id,
+    normalize_playlist_url,
+    split_playlist_units_into_batches,
+)
+
 from app import (
     CHUNK_WORD_LIMIT,
     build_analysis_instructions,
@@ -131,6 +139,86 @@ def test_build_chunked_chatgpt_prompt():
     assert chunk_text in prompt
 
 
+
+def test_extract_playlist_id():
+    playlist_id = "PLR2bLIYLsk_SKlWWfw1A-vS7WzPswHb3c"
+
+    valid_inputs = [
+        f"https://www.youtube.com/playlist?list={playlist_id}",
+        f"https://www.youtube.com/watch?v=dQw4w9WgXcQ&list={playlist_id}",
+        playlist_id,
+    ]
+
+    for playlist_input in valid_inputs:
+        assert extract_playlist_id(playlist_input) == playlist_id
+
+    invalid_inputs = [
+        "",
+        "hello",
+        "https://evilyoutube.com/playlist?list=PLR2bLIYLsk_SKlWWfw1A-vS7WzPswHb3c",
+        "dQw4w9WgXcQ",
+    ]
+
+    for playlist_input in invalid_inputs:
+        assert extract_playlist_id(playlist_input) is None
+
+    assert normalize_playlist_url(playlist_id) == (
+        f"https://www.youtube.com/playlist?list={playlist_id}"
+    )
+
+
+def test_playlist_batching_preserves_video_attribution():
+    videos = [
+        {
+            "position": 1,
+            "video_id": "aaaaaaaaaaa",
+            "title": "First Video",
+            "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+            "transcript_text": " ".join(["one"] * 7),
+            "metadata": {"word_count": 7},
+        },
+        {
+            "position": 2,
+            "video_id": "bbbbbbbbbbb",
+            "title": "Second Video",
+            "url": "https://www.youtube.com/watch?v=bbbbbbbbbbb",
+            "transcript_text": " ".join(["two"] * 7),
+            "metadata": {"word_count": 7},
+        },
+    ]
+
+    units = build_playlist_units(videos, word_limit=5)
+    assert len(units) == 4
+    assert units[0]["position"] == 1
+    assert units[0]["part_number"] == 1
+    assert units[1]["part_number"] == 2
+    assert units[2]["position"] == 2
+
+    batches = split_playlist_units_into_batches(units, word_limit=10)
+    assert len(batches) >= 2
+    assert sum(unit["word_count"] for batch in batches for unit in batch) == 14
+
+
+def test_playlist_synthesis_prompt_mentions_missing_evidence():
+    playlist_info = {
+        "playlist_title": "Example Playlist",
+        "playlist_id": "PL123456789012",
+    }
+    prompt = build_playlist_synthesis_prompt(
+        playlist_info,
+        "Study Notes",
+        successful_video_count=8,
+        total_video_count=10,
+        total_batches=3,
+        failure_count=2,
+    )
+
+    assert "Example Playlist" in prompt
+    assert "Videos skipped or failed: 2" in prompt
+    assert "[PASTE BATCH 3 ANALYSIS HERE]" in prompt
+    assert "Do not claim to have analyzed videos that were skipped or failed." in prompt
+
+
 def main():
     test_extract_video_id()
     test_slugify_prompt_mode()
@@ -140,6 +228,9 @@ def main():
     test_build_timestamped_transcript()
     test_build_chatgpt_analysis_prompt_includes_title()
     test_build_chunked_chatgpt_prompt()
+    test_extract_playlist_id()
+    test_playlist_batching_preserves_video_attribution()
+    test_playlist_synthesis_prompt_mentions_missing_evidence()
 
     print("All manual regression checks passed.")
 
