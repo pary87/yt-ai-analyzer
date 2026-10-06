@@ -11,10 +11,13 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 from streamlit.testing.v1 import AppTest
 from youtube_transcript_api import IpBlocked, TranscriptsDisabled
 
+import playlist_analysis
 from playlist_analysis import (
     BATCH_SYNTHESIS_WORD_LIMIT,
+    EMPTY_TRANSCRIPT_MESSAGE,
     NOT_ATTEMPTED_MESSAGE,
     build_playlist_batch_prompt,
+    build_playlist_export_zip,
     build_playlist_group_prompt,
     build_playlist_manifest_csv,
     build_playlist_outputs,
@@ -336,7 +339,16 @@ def test_synthesis_is_tiered_for_many_batches():
     playlist_info = {"playlist_title": "Example Playlist", "playlist_id": "PL123456789012"}
 
     assert plan_synthesis_groups(10) == []
-    assert plan_synthesis_groups(25) == [(1, 10), (11, 20), (21, 25)]
+    assert plan_synthesis_groups(11) == [(1, 6), (7, 11)]
+    assert plan_synthesis_groups(25) == [(1, 9), (10, 17), (18, 25)]
+
+    for total_batches in (11, 20, 21, 141, 167):
+        groups = plan_synthesis_groups(total_batches)
+        sizes = [last - first + 1 for first, last in groups]
+        assert groups[0][0] == 1 and groups[-1][1] == total_batches
+        assert all(groups[i][1] + 1 == groups[i + 1][0] for i in range(len(groups) - 1))
+        assert max(sizes) <= 10 and max(sizes) - min(sizes) <= 1
+        assert len(groups) == -(-total_batches // 10)
 
     group_prompt = build_playlist_group_prompt(playlist_info, "Study Notes", 3, 3, 21, 25, 25)
     assert '[PASTE THE "Batch synthesis" SECTION FROM BATCH 21 HERE]' in group_prompt
@@ -382,10 +394,13 @@ def test_playlist_outputs_for_large_playlist():
 
     assert len(outputs["batch_prompts"]) == 25
     assert outputs["batch_labels"][0] == "video 1"
-    assert outputs["groups"] == [(1, 10), (11, 20), (21, 25)]
+    assert outputs["groups"] == [(1, 9), (10, 17), (18, 25)]
     assert len(outputs["group_prompts"]) == 3
     assert "FROM GROUP 3 HERE" in outputs["synthesis_prompt"]
+    assert '- Video 26: Café, "quoted" title (not attempted)' in outputs["synthesis_prompt"]
     assert outputs["total_words"] == 25 * 11000
+    assert "export_zip" not in outputs
+    assert 3 * 400 < outputs["final_prompt_words_estimate"] < 12000
 
     assert outputs["manifest_csv"].startswith(b"\xef\xbb\xbf")
     manifest_rows = list(csv.DictReader(io.StringIO(outputs["manifest_csv"].decode("utf-8-sig"))))
@@ -393,7 +408,16 @@ def test_playlist_outputs_for_large_playlist():
     assert manifest_rows[-1]["title"] == 'Café, "quoted" title'
     assert manifest_rows[-1]["status"] == "not attempted"
 
-    with zipfile.ZipFile(io.BytesIO(outputs["export_zip"])) as archive:
+    export_zip = build_playlist_export_zip(
+        playlist_info,
+        videos,
+        [failure],
+        outputs["batch_prompts"],
+        outputs["group_prompts"],
+        outputs["synthesis_prompt"],
+    )
+
+    with zipfile.ZipFile(io.BytesIO(export_zip)) as archive:
         names = set(archive.namelist())
         assert "prompts/batches/playlist_batch_025.txt" in names
         assert "prompts/groups/playlist_group_003.txt" in names
@@ -452,9 +476,34 @@ def test_collect_records_network_errors_per_video():
     assert errors[4] == get_transcript_error_message(TranscriptsDisabled("netvideo004"))
 
 
-def test_collect_reuses_collected_transcripts():
-    import playlist_analysis
+def test_collect_records_unexpected_errors_and_empty_transcripts():
+    from xml.etree.ElementTree import ParseError
 
+    def fetch(video_id):
+        if video_id.endswith("02"):
+            raise ParseError("no element found: line 1, column 0")
+
+        if video_id.endswith("03"):
+            return []
+
+        if video_id.endswith("04"):
+            return [{"start": 0, "text": "   "}]
+
+        return _segments(video_id)
+
+    collected = {}
+    successful_videos, failures, blocked = _collect(_entries("oddvideo0", 5), fetch, collected)
+
+    assert not blocked
+    assert [video["position"] for video in successful_videos] == [1, 5]
+    errors = {failure["position"]: failure["error"] for failure in failures}
+    assert errors[2].startswith("Unexpected error (ParseError)")
+    assert errors[3] == EMPTY_TRANSCRIPT_MESSAGE
+    assert errors[4] == EMPTY_TRANSCRIPT_MESSAGE
+    assert sorted(collected) == ["oddvideo001", "oddvideo005"]
+
+
+def test_collect_reuses_collected_transcripts():
     calls = []
 
     def fetch(video_id):
@@ -534,6 +583,9 @@ def fake_fetch(video_id):
     if video_id == "PLBLOCKED02":
         raise IpBlocked(video_id)
 
+    if video_id.startswith("PLEMPTYAA"):
+        return [{"start": 0, "text": "   "}]
+
     return [{"start": 0, "text": f"Transcript of {video_id}."}]
 
 
@@ -556,6 +608,7 @@ def _batch_prompt_text(app_test):
 
 
 def test_playlist_ui_shows_prompts_for_current_playlist_and_mode():
+    playlist_analysis._collected_transcripts.clear()
     app_test = AppTest.from_string(PLAYLIST_UI_SCRIPT, default_timeout=60).run()
 
     app_test.text_input[0].input("PLAAAAAAAAAAAA").run()
@@ -588,6 +641,28 @@ def test_playlist_ui_shows_prompts_for_current_playlist_and_mode():
     assert app_test.session_state["fake_fetches"] == 8
     assert any("blocking transcript requests" in warning.value for warning in app_test.warning)
 
+    # Input that is not a playlist leaves the old results labelled as such.
+    app_test.text_input[0].input("not a playlist").run()
+    assert any("Showing results for the last analyzed playlist" in info.value for info in app_test.info)
+
+    # Empty transcripts are failures, not crashes.
+    app_test.text_input[0].input("PLEMPTYAAAAAAA").run()
+    app_test.button[0].click().run()
+    assert not app_test.exception
+    assert any("No usable English transcripts" in error.value for error in app_test.error)
+
+
+def test_playlist_ui_reports_interrupted_collection():
+    app_test = AppTest.from_string(PLAYLIST_UI_SCRIPT, default_timeout=60)
+    app_test.session_state["playlist_pending"] = "Title PLAAAAAAAAAAAA"
+    app_test.run()
+    assert any("was interrupted" in warning.value for warning in app_test.warning)
+
+    app_test.text_input[0].input("PLAAAAAAAAAAAA").run()
+    app_test.button[0].click().run()
+    assert not app_test.exception
+    assert not any("was interrupted" in warning.value for warning in app_test.warning)
+
 
 def test_single_video_mode_works_without_yt_dlp():
     script = f"""
@@ -605,6 +680,21 @@ assert app_test.text_input[0].label == "YouTube URL"
 app_test.radio[0].set_value("Whole playlist").run()
 assert not app_test.exception, app_test.exception
 assert any("Whole-playlist mode is unavailable" in error.value for error in app_test.error)
+
+analysis_test = AppTest.from_string(
+    '''
+import app
+app.fetch_video_title = lambda video_id: "Fake title"
+app.fetch_transcript_segments = lambda video_id: [{{"start": 0, "text": "Hello from a fake transcript."}}]
+app.main()
+''',
+    default_timeout=60,
+).run()
+analysis_test.text_input[0].input("dQw4w9WgXcQ").run()
+analysis_test.button[0].click().run()
+assert not analysis_test.exception, analysis_test.exception
+assert any("Hello from a fake transcript." in area.value for area in analysis_test.text_area)
+assert "playlist_analysis" not in sys.modules
 print("single-video mode ok without yt-dlp")
 """
     result = subprocess.run(
@@ -638,8 +728,10 @@ def main():
     test_playlist_outputs_for_large_playlist()
     test_collect_stops_when_youtube_blocks()
     test_collect_records_network_errors_per_video()
+    test_collect_records_unexpected_errors_and_empty_transcripts()
     test_collect_reuses_collected_transcripts()
     test_playlist_ui_shows_prompts_for_current_playlist_and_mode()
+    test_playlist_ui_reports_interrupted_collection()
     test_single_video_mode_works_without_yt_dlp()
 
     print("All manual regression checks passed.")
