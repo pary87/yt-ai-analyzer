@@ -5,7 +5,6 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 import streamlit as st
-from playlist_analysis import render_playlist_mode
 from youtube_transcript_api import (
     CouldNotRetrieveTranscript,
     IpBlocked,
@@ -408,6 +407,18 @@ def main():
     )
 
     if source_type == "Whole playlist":
+        # Import playlist support only when it is used, so single-video mode
+        # keeps working even if playlist-only packages such as yt-dlp are missing.
+        try:
+            from playlist_analysis import render_playlist_mode
+        except ImportError as error:
+            st.error(
+                f"Whole-playlist mode is unavailable: {error}. "
+                "Run `pip install -r requirements.txt` to enable it. "
+                "Single-video mode still works."
+            )
+            return
+
         render_playlist_mode(
             PROMPT_MODES,
             fetch_transcript_segments,

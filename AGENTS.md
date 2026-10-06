@@ -19,11 +19,11 @@ Single-video analysis must stay usable and independently releasable throughout p
 Run before every push. CI runs the same checks on `windows-latest` with Python 3.14.
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile .\app.py .\tests_manual.py
+.\.venv\Scripts\python.exe -m py_compile .\app.py .\playlist_analysis.py .\tests_manual.py
 .\.venv\Scripts\python.exe .\tests_manual.py
 ```
 
-On macOS or Linux, run `python -m py_compile app.py tests_manual.py` and `python tests_manual.py`. The last line must be `All manual regression checks passed.` When you add a Python module, add it to the `py_compile` step here and in `.github/workflows/ci.yml`.
+On macOS or Linux, run `python -m py_compile app.py playlist_analysis.py tests_manual.py` and `python tests_manual.py`. The last line must be `All manual regression checks passed.` When you add a Python module, add it to the `py_compile` step here and in `.github/workflows/ci.yml`.
 
 ## Roles
 
