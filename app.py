@@ -1,5 +1,6 @@
 import json
 import re
+import sys
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
@@ -398,6 +399,7 @@ def get_transcript_error_message(error):
 
 def main():
     """Show the Streamlit app UI."""
+    # Show the page title at the top of the app.
     st.title("YouTube Video Analyzer")
 
     source_type = st.radio(
@@ -414,8 +416,8 @@ def main():
         except ImportError as error:
             st.error(
                 f"Whole-playlist mode is unavailable: {error}. "
-                "Run `pip install -r requirements.txt` to enable it. "
-                "Single-video mode still works."
+                f"To enable it, run `{sys.executable} -m pip install -r requirements.txt` "
+                "in the project folder, then restart the app. Single-video mode still works."
             )
             return
 
@@ -430,22 +432,22 @@ def main():
         )
         return
 
+    # Ask the user to paste a YouTube video URL.
     youtube_url = st.text_input("YouTube URL")
     has_youtube_url = bool(youtube_url.strip())
 
+    # Choose the kind of ChatGPT prompt to generate after transcript cleanup.
     prompt_mode = st.selectbox("Prompt mode", PROMPT_MODES)
     prompt_mode_slug = slugify_prompt_mode(prompt_mode)
     st.write(f"Selected prompt mode: {prompt_mode}")
 
+    # When the button is clicked, try to fetch and display the transcript.
     if st.button("Analyze Video", disabled=not has_youtube_url):
         video_id = extract_video_id(youtube_url)
         transcript_segment_count = None
 
         if not video_id:
-            st.error(
-                "Invalid YouTube URL or video ID. Please paste a supported YouTube URL "
-                "or an 11-character video ID."
-            )
+            st.error("Invalid YouTube URL or video ID. Please paste a supported YouTube URL or an 11-character video ID.")
         else:
             try:
                 with st.spinner("Fetching transcript..."):
