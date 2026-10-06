@@ -24,7 +24,7 @@ A local Python Streamlit app that fetches YouTube transcripts and prepares copy-
   - Preserves playlist order and video attribution.
   - Splits large playlists into ChatGPT-sized analysis batches.
   - Combines batch results through group prompts and a final whole-playlist synthesis prompt.
-  - Stops collecting when YouTube blocks requests, and keeps collected transcripts so a later run fetches only the missing videos.
+  - Stops collecting when YouTube blocks requests, and keeps collected transcripts while the app runs so a later run fetches only the missing videos.
   - Records failed/skipped videos instead of silently omitting them.
   - Exports a ZIP package with transcripts, prompts, manifest, and failure evidence.
 - Includes a small debug info expander.
@@ -36,12 +36,12 @@ In the app, choose **Whole playlist**, paste a playlist URL, select the analysis
 So that no single prompt grows too large, the manual workflow is staged:
 
 1. Paste each batch prompt into a new ChatGPT chat and keep the "Batch synthesis" section of each answer (at most 250 words).
-2. If there are more than 10 batches, paste those sections into the group prompts (10 batches each) and keep each "Group synthesis" section (at most 400 words).
-3. Paste the synthesis sections into the final whole-playlist prompt.
+2. If there are more than 10 batches, paste those sections into the group prompts (up to 10 batches each) and keep each "Group synthesis" section (at most 400 words).
+3. Paste the synthesis sections into the final whole-playlist prompt, which also lists the videos that have no transcript.
 
 Each step preserves which ideas came from which video. Changing the prompt mode rebuilds every prompt from the collected transcripts without downloading them again.
 
-The app waits one second between transcript downloads. If YouTube starts blocking requests, collection stops, the transcripts already collected are kept for the rest of the session, and the remaining videos are marked "not attempted". Click **Analyze Whole Playlist** again later to fetch only the missing videos.
+The app waits one second between transcript downloads. If YouTube starts blocking requests, collection stops, the transcripts already collected are kept while the app is running, and the remaining videos are marked "not attempted". Click **Analyze Whole Playlist** again later to fetch only the missing videos.
 
 The app still does **not** automatically send transcripts to an AI service.
 
@@ -137,7 +137,7 @@ GitHub Actions runs the same checks on Windows for every pull request and every 
 
 ## Migrating An Existing `master` Installation
 
-Older copies of this project track the `master` branch. `main` and `master` share no history, so `git pull` on `master` will never receive new work. The app code on `master`'s latest commit is identical to `main`'s before this cleanup, so switching does not change how the app behaves. A fresh clone already uses `main`.
+Older copies of this project track the `master` branch. `main` and `master` share no history, so `git pull` on `master` will never receive new work. Switching adds whole-playlist mode; step 5 installs its `yt-dlp` dependency. Single-video analysis works as before, and its button is now labelled **Analyze Video**. A fresh clone already uses `main`.
 
 Run these in PowerShell from the existing project folder, for example `C:\p\youtube-analyzer`:
 
