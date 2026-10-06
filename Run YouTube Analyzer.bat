@@ -1,6 +1,7 @@
 @echo off
 rem Run from the folder that contains this script, wherever the project lives.
-cd /d "%~dp0"
+rem pushd also handles network (UNC) folders, which cd cannot enter.
+pushd "%~dp0" || (echo Could not open the launcher folder "%~dp0". & pause & exit /b 1)
 
 if not exist ".venv\Scripts\python.exe" (
     echo No virtual environment found at "%CD%\.venv".

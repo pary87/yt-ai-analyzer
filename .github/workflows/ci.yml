@@ -30,7 +30,8 @@ jobs:
       - name: Reject committed Git metadata and bytecode
         shell: bash
         run: |
-          bad=$(git ls-files | grep -E '(^|/)__pycache__/|\.py[co]$|^(HEAD|config|description|index|packed-refs|COMMIT_EDITMSG|ORIG_HEAD|FETCH_HEAD)$|(^|/)(applypatch-msg|commit-msg|fsmonitor-watchman|post-update|pre-[a-z-]+|prepare-commit-msg|push-to-checkout|sendemail-validate|update)\.sample$' || true)
+          tracked=$(git ls-files)
+          bad=$(printf '%s\n' "$tracked" | grep -E '(^|/)__pycache__/|\.py[co]$|^(HEAD|config|description|index|packed-refs|COMMIT_EDITMSG|ORIG_HEAD|FETCH_HEAD)$|(^|/)(applypatch-msg|commit-msg|fsmonitor-watchman|post-update|pre-[a-z-]+|prepare-commit-msg|push-to-checkout|sendemail-validate|update)\.sample$' || true)
           if [ -n "$bad" ]; then
             echo "::error::These tracked files should not be committed:"
             echo "$bad"
