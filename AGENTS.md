@@ -12,7 +12,7 @@ Single-video analysis must stay usable and independently releasable throughout p
 - `master` and tag `v1.0.0-mvp1` hold the pre-upload history, which shares no commits with `main`. Do not push to, merge, rebase, or delete them. Never use `--allow-unrelated-histories`.
 - Do not delete or rewrite other branches, including `claude/affectionate-pasteur-n4mvfg` (Chrome extension).
 - Keep each pull request to one concern.
-- Never commit Git internals (`HEAD`, `config`, `index`, `*.sample`), `__pycache__/`, `*.pyc`, `.venv/`, or a nested copy of the project. CI fails if Git internals or bytecode are tracked.
+- Never commit Git internals (`HEAD`, `config`, `index`, `*.sample`), `__pycache__/`, `*.pyc`, `.venv/`, or a nested copy of the project. CI rejects tracked `__pycache__/`, `*.pyc`, hook `*.sample` files, and root-level Git files such as `HEAD`, `config` and `index`.
 
 ## Tests
 
@@ -27,7 +27,7 @@ On macOS or Linux, run `python -m py_compile app.py tests_manual.py` and `python
 
 ## Roles
 
-- **Owner (Pary):** sets priorities, decides scope, and is the only one who merges.
+- **Owner (Pary):** sets priorities, decides scope, and authorizes every merge.
 - **Builder (Claude Code):** the only agent that edits files, commits, or pushes. Works on a feature branch, opens a draft pull request, runs the tests before each push, and answers every review finding with a fix commit or a stated reason.
 - **Reviewer (Codex):** read-only. Reviews the pull request diff at a named head commit and posts findings as PR comments. Does not edit, commit, or push.
 - One builder per branch at a time. The owner may reassign roles for a pull request.
