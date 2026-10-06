@@ -2,6 +2,10 @@
 
 A local Streamlit app for Windows that turns YouTube transcripts into copy-and-paste ChatGPT prompts. It makes no AI API calls; keep it that way unless the owner decides otherwise.
 
+## Single-Video Analysis
+
+Single-video analysis must stay usable and independently releasable throughout playlist development. Playlist work must not break it, must not make it depend on playlist-only code or packages (for example, a top-level `yt_dlp` import in `app.py`), and must leave `main` releasable with single-video mode alone after every merge.
+
 ## Branches
 
 - `main` is the canonical branch. Start every branch from `main` and open every pull request against it.
